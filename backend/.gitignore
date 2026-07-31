@@ -1,0 +1,7 @@
+node_modules/
+dist/
+downloads/
+yt-dlp
+yt-dlp.exe
+.env
+*.log

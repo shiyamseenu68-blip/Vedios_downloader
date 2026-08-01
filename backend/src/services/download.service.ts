@@ -1,0 +1,200 @@
+import { execFile, spawn } from 'child_process';
+import path from 'path';
+import { promises as fs } from 'fs';
+import ffmpegPath from 'ffmpeg-static';
+import { logger } from '../config/logger';
+import { AppError } from '../utils/error-handler';
+import { progressTracker, DownloadProgress } from '../utils/progress-tracker';
+import { ensureDownloadDir, getOutputPath, generateDownloadId, deleteFile } from '../utils/file-utils';
+import { QUALITY_FORMATS } from '../config/constants';
+
+export interface DownloadOptions {
+  url: string;
+  quality: string;
+  type: 'video' | 'audio';
+}
+
+export class DownloadService {
+  private activeProcesses: Map<string, any> = new Map();
+
+  async startDownload(options: DownloadOptions): Promise<string> {
+    const downloadId = generateDownloadId();
+    const downloadDir = await ensureDownloadDir();
+    
+    const extension = options.type === 'audio' ? 'mp3' : 'mp4';
+    const outputPath = getOutputPath(downloadId, extension);
+    
+    progressTracker.createDownload(downloadId);
+    
+    try {
+      await this.executeDownload(downloadId, options, outputPath);
+      return downloadId;
+    } catch (error) {
+      progressTracker.failDownload(downloadId, error instanceof Error ? error.message : 'Unknown error');
+      throw error;
+    }
+  }
+
+  private async executeDownload(
+    downloadId: string,
+    options: DownloadOptions,
+    outputPath: string
+  ): Promise<void> {
+    const ytDlpPath = this.getYtDlpPath();
+    const args = this.buildYtDlpArgs(options, outputPath);
+
+    logger.info({ downloadId, command: `${ytDlpPath} ${args.join(' ')}` }, 'Starting download');
+
+    progressTracker.updateProgress(downloadId, { status: 'downloading' });
+
+    return new Promise((resolve, reject) => {
+      const process = spawn(ytDlpPath, args);
+      this.activeProcesses.set(downloadId, process);
+
+      let downloadedBytes = 0;
+      let totalBytes = 0;
+      let stderrOutput = '';
+
+      process.stderr.on('data', (data) => {
+        const output = data.toString();
+        stderrOutput += output;
+        logger.debug({ downloadId, output }, 'yt-dlp stderr');
+        this.parseProgress(output, downloadId, (progress) => {
+          downloadedBytes = progress.downloadedBytes || downloadedBytes;
+          totalBytes = progress.totalBytes || totalBytes;
+          
+          progressTracker.updateProgress(downloadId, {
+            progress: progress.percentage,
+            downloadedBytes,
+            totalBytes,
+            speed: progress.speed,
+            eta: progress.eta,
+          });
+        });
+      });
+
+      process.on('close', (code) => {
+        this.activeProcesses.delete(downloadId);
+        
+        if (code === 0) {
+          logger.info({ downloadId, outputPath }, 'Download completed');
+          progressTracker.completeDownload(downloadId, outputPath);
+          resolve();
+        } else {
+          const error = new AppError(
+            'DOWNLOAD_FAILED',
+            `Download failed with exit code ${code}`,
+            { exitCode: code, stderr: stderrOutput }
+          );
+          logger.error({ downloadId, exitCode: code, stderr: stderrOutput }, 'Download failed');
+          reject(error);
+        }
+      });
+
+      process.on('error', (error) => {
+        this.activeProcesses.delete(downloadId);
+        logger.error({ downloadId, error: error.message }, 'Download process error');
+        reject(new AppError('PROCESS_ERROR', error.message));
+      });
+    });
+  }
+
+  private buildYtDlpArgs(options: DownloadOptions, outputPath: string): string[] {
+    const args = [
+      '-f',
+      this.getFormatString(options),
+      '-o',
+      outputPath,
+      '--no-playlist',
+    ];
+
+    if (options.type === 'audio') {
+      args.push('-x', '--audio-format', 'mp3');
+    }
+
+    // Add FFmpeg location for audio extraction
+    if (ffmpegPath) {
+      args.push('--ffmpeg-location', ffmpegPath);
+    }
+
+    args.push(options.url);
+
+    return args;
+  }
+
+  private getFormatString(options: DownloadOptions): string {
+    if (options.type === 'audio') {
+      return 'bestaudio/best';
+    }
+    return QUALITY_FORMATS[options.quality] || QUALITY_FORMATS.best;
+  }
+
+  private parseProgress(
+    output: string,
+    downloadId: string,
+    callback: (progress: any) => void
+  ): void {
+    const downloadMatch = output.match(/(\d+\.?\d*)%/);
+    const sizeMatch = output.match(/(\d+\.?\d*[A-Z]+) of (\d+\.?\d*[A-Z]+)/);
+    const speedMatch = output.match(/at\s+(\d+\.?\d*[A-Z]+\/s)/);
+    const etaMatch = output.match(/ETA\s+(\d+:\d+)/);
+
+    if (downloadMatch) {
+      const percentage = parseFloat(downloadMatch[1]);
+      callback({
+        percentage,
+        downloadedBytes: sizeMatch ? this.parseSize(sizeMatch[1]) : undefined,
+        totalBytes: sizeMatch ? this.parseSize(sizeMatch[2]) : undefined,
+        speed: speedMatch ? speedMatch[1] : undefined,
+        eta: etaMatch ? etaMatch[1] : undefined,
+      });
+    }
+  }
+
+  private parseSize(sizeStr: string): number {
+    const units: Record<string, number> = { B: 1, KB: 1024, MB: 1048576, GB: 1073741824 };
+    const match = sizeStr.match(/^(\d+\.?\d*)([A-Z]+)$/);
+    if (match) {
+      const value = parseFloat(match[1]);
+      const unit = match[2];
+      return value * (units[unit] || 1);
+    }
+    return 0;
+  }
+
+  cancelDownload(downloadId: string): void {
+    const process = this.activeProcesses.get(downloadId);
+    if (process) {
+      logger.info({ downloadId }, 'Cancelling download');
+      process.kill();
+      this.activeProcesses.delete(downloadId);
+      progressTracker.cancelDownload(downloadId);
+    }
+  }
+
+  async getDownloadProgress(downloadId: string): Promise<DownloadProgress | undefined> {
+    return progressTracker.getProgress(downloadId);
+  }
+
+  async serveFile(downloadId: string): Promise<string> {
+    const progress = progressTracker.getProgress(downloadId);
+    if (!progress || !progress.filePath) {
+      throw new AppError('FILE_NOT_FOUND', 'Download not found or not completed');
+    }
+
+    const fileExists = await fs.access(progress.filePath).then(() => true).catch(() => false);
+    if (!fileExists) {
+      throw new AppError('FILE_NOT_FOUND', 'File no longer exists');
+    }
+
+    return progress.filePath;
+  }
+
+  private getYtDlpPath(): string {
+    const platform = process.platform;
+    const binary = platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
+    return path.join(process.cwd(), binary);
+  }
+}
+
+export const downloadService = new DownloadService();

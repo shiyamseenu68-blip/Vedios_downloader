@@ -5,6 +5,7 @@ import { errorHandlerMiddleware } from './middleware/error.middleware';
 import routes from './routes';
 import { logger } from './config/logger';
 import { YtDlpService } from './services/yt-dlp.service';
+import { cleanupService } from './services/cleanup.service';
 
 export function createApp() {
   const app = express();
@@ -30,6 +31,10 @@ export async function startServer() {
     logger.error({ error }, 'Failed to initialize yt-dlp');
     throw error;
   }
+
+  // Start cleanup service
+  cleanupService.start();
+  logger.info('Cleanup service started');
 
   app.listen(config.port, () => {
     logger.info({ port: config.port, env: config.nodeEnv }, 'Server started');

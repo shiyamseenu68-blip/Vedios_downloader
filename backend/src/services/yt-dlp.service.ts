@@ -1,4 +1,4 @@
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import { logger } from '../config/logger';
@@ -10,8 +10,16 @@ const execFileAsync = promisify(execFile);
 export class YtDlpService {
   private getYtDlpPath(): string {
     const platform = process.platform;
-    const binary = platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
-    return path.join(process.cwd(), binary);
+    let binary = platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
+    
+    // Check if binary exists in project root (for production deployments)
+    const projectRootPath = path.join(process.cwd(), binary);
+    if (require('fs').existsSync(projectRootPath)) {
+      return projectRootPath;
+    }
+    
+    // Fallback to default path
+    return binary;
   }
 
   async analyzeUrl(url: string): Promise<VideoMetadata | PlaylistMetadata> {
@@ -90,6 +98,158 @@ export class YtDlpService {
     } catch (error) {
       logger.error({ error }, 'Failed to get yt-dlp version');
       throw new AppError('YTDLP_NOT_FOUND', 'yt-dlp binary not found or not executable');
+    }
+  }
+
+  private async executeWithAbort(
+    command: string,
+    args: string[],
+    timeoutMs: number
+  ): Promise<{ stdout: string; stderr: string }> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    // Add ffmpeg-static to PATH for yt-dlp subprocess
+    const ffmpegPath = require('ffmpeg-static');
+    const ffmpegDir = path.dirname(ffmpegPath);
+    // Add Node.js to PATH for JavaScript runtime
+    const nodeDir = 'C:\\Program Files\\nodejs';
+    const env = { 
+      ...process.env, 
+      PATH: `${ffmpegDir}${path.delimiter}${nodeDir}${path.delimiter}${process.env.PATH}` 
+    };
+
+    return new Promise((resolve, reject) => {
+      const process = spawn(command, args, { env });
+      let stdout = '';
+      let stderr = '';
+      let isResolved = false;
+
+      const abortHandler = () => {
+        if (isResolved) return;
+        isResolved = true;
+
+        cleanup();
+        reject(new Error('Playlist analysis timed out'));
+      };
+
+      const cleanup = () => {
+        if (timeoutId) clearTimeout(timeoutId);
+        process.stdout.removeAllListeners();
+        process.stderr.removeAllListeners();
+        process.removeAllListeners('close');
+        process.removeAllListeners('error');
+        controller.signal.removeEventListener('abort', abortHandler);
+        if (!process.killed) process.kill();
+      };
+
+      process.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      process.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      process.on('close', (code) => {
+        if (isResolved) return;
+        isResolved = true;
+
+        cleanup();
+
+        if (code === 0) {
+          resolve({ stdout, stderr });
+        } else {
+          reject(new Error(`Process exited with code ${code}`));
+        }
+      });
+
+      process.on('error', (error) => {
+        if (isResolved) return;
+        isResolved = true;
+
+        cleanup();
+        reject(error);
+      });
+
+      controller.signal.addEventListener('abort', abortHandler);
+    });
+  }
+
+  async analyzePlaylist(url: string): Promise<PlaylistMetadata> {
+    const ytDlpPath = this.getYtDlpPath();
+    const startTime = Date.now();
+
+    logger.info({ url }, 'Starting playlist analysis');
+
+    try {
+      // Get video list with playlist metadata (limited to 20)
+      const videoArgs = [
+        '--dump-json',
+        '--flat-playlist',
+        '--playlist-end', '20',
+        url
+      ];
+      logger.info({ command: `${ytDlpPath} ${videoArgs.join(' ')}` }, 'Video extraction started');
+
+      const videoStartTime = Date.now();
+      const { stdout: videoStdout } = await this.executeWithAbort(ytDlpPath, videoArgs, 60000);
+      const videoDuration = Date.now() - videoStartTime;
+
+      logger.info({ durationMs: videoDuration }, 'Video extraction completed');
+
+      const lines = videoStdout.trim().split('\n');
+      const videos: VideoMetadata[] = [];
+      let playlistMetadata: any = null;
+
+      for (const line of lines) {
+        if (line.trim() && videos.length < 20) {
+          try {
+            const data = JSON.parse(line);
+            if (!playlistMetadata) {
+              playlistMetadata = data;
+            }
+            videos.push(this.parseVideoMetadata(data));
+          } catch (e) {
+            logger.warn({ line, error: e }, 'Failed to parse playlist entry');
+          }
+        }
+      }
+
+      const totalDuration = Date.now() - startTime;
+
+      logger.info({ 
+        videoCount: videos.length,
+        totalDurationMs: totalDuration,
+        videoDurationMs: videoDuration
+      }, 'Playlist analysis completed');
+
+      return {
+        id: playlistMetadata?.playlist_id || '',
+        title: playlistMetadata?.playlist_title || '',
+        uploader: playlistMetadata?.playlist_uploader || playlistMetadata?.playlist_channel || '',
+        video_count: videos.length,
+        thumbnail: '',
+        url: playlistMetadata?.playlist_webpage_url || url,
+        videos,
+      };
+    } catch (error: any) {
+      const totalDuration = Date.now() - startTime;
+      logger.error({
+        url,
+        error: error.message,
+        totalDurationMs: totalDuration,
+      }, 'Playlist analysis failed');
+
+      if (error.message === 'Playlist analysis timed out') {
+        throw new AppError('PLAYLIST_TIMEOUT', 'Playlist analysis timed out');
+      }
+
+      throw new AppError(
+        'PLAYLIST_ANALYSIS_FAILED',
+        'Failed to analyze playlist',
+        { error: error.message }
+      );
     }
   }
 }

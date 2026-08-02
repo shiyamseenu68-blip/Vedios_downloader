@@ -21,4 +21,28 @@ export const downloadRequestSchema = z.object({
 });
 
 export type AnalyzeUrlInput = z.infer<typeof analyzeUrlSchema>;
+export const analyzePlaylistSchema = z.object({
+  url: z.string().url().refine(
+    (url) => {
+      return url.includes('youtube.com/playlist') || url.includes('youtu.be');
+    },
+    { message: 'URL must be a valid YouTube playlist URL' }
+  ),
+});
+
+export type AnalyzePlaylistInput = z.infer<typeof analyzePlaylistSchema>;
+
+export const playlistDownloadSchema = z.object({
+  url: z.string().url().refine(
+    (url) => {
+      return url.includes('youtube.com/playlist') || url.includes('youtu.be');
+    },
+    { message: 'URL must be a valid YouTube playlist URL' }
+  ),
+  quality: z.enum(['best', '1080p', '720p', '480p', '360p', '240p', '144p']),
+  type: z.enum(['video', 'audio']),
+  videoIds: z.array(z.string()).optional(),
+});
+
+export type PlaylistDownloadInput = z.infer<typeof playlistDownloadSchema>;
 export type DownloadRequestInput = z.infer<typeof downloadRequestSchema>;

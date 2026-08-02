@@ -1,6 +1,7 @@
 import { execFile, spawn } from 'child_process';
 import path from 'path';
 import { promises as fs } from 'fs';
+import fsSync from 'fs';
 import ffmpegPath from 'ffmpeg-static';
 import { logger } from '../config/logger';
 import { AppError } from '../utils/error-handler';
@@ -73,12 +74,34 @@ export class DownloadService {
         });
       });
 
-      process.on('close', (code) => {
+      process.on('close', async (code) => {
         this.activeProcesses.delete(downloadId);
         
         if (code === 0) {
           logger.info({ downloadId, outputPath }, 'Download completed');
-          progressTracker.completeDownload(downloadId, outputPath);
+          
+          // Check if the expected file exists, if not, try to find the actual file
+          const expectedFileExists = fsSync.existsSync(outputPath);
+          
+          if (!expectedFileExists) {
+            // Try to find files with similar names (yt-dlp might use different extensions)
+            const downloadDir = path.dirname(outputPath);
+            const baseName = path.basename(outputPath, path.extname(outputPath));
+            try {
+              const files = await fs.readdir(downloadDir);
+              const matchingFiles = files.filter((f: string) => f.startsWith(baseName));
+              if (matchingFiles.length > 0) {
+                const actualPath = path.join(downloadDir, matchingFiles[0]);
+                progressTracker.completeDownload(downloadId, actualPath);
+              } else {
+                progressTracker.completeDownload(downloadId, outputPath);
+              }
+            } catch (err) {
+              progressTracker.completeDownload(downloadId, outputPath);
+            }
+          } else {
+            progressTracker.completeDownload(downloadId, outputPath);
+          }
           resolve();
         } else {
           const error = new AppError(

@@ -135,7 +135,7 @@ router.get('/playlist-file/:downloadId', async (req, res, next) => {
     
     logger.info({ downloadId, fileSize: stats.size }, '=== PLAYLIST FILE DOWNLOAD RESPONSE SENT ===');
   } catch (error) {
-    logger.error({ error, stack: error.stack }, '=== PLAYLIST FILE DOWNLOAD ERROR ===');
+    logger.error({ error, stack: error instanceof Error ? error.stack : undefined }, '=== PLAYLIST FILE DOWNLOAD ERROR ===');
     next(handleError(error, 'GET /api/playlist-file/:downloadId'));
   }
 });

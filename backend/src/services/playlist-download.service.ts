@@ -77,14 +77,6 @@ class PlaylistDownloadService {
         const video = videosToDownload[i];
         const videoDownloadId = `${downloadId}_video_${i}`;
 
-        logger.info({ 
-          downloadId, 
-          videoId: video.id, 
-          videoTitle: video.title,
-          index: i + 1,
-          total: videosToDownload.length
-        }, 'Starting video download');
-
         this.updatePlaylistProgress(downloadId, {
           currentVideoIndex: i,
           currentVideoId: video.id,
@@ -340,16 +332,25 @@ class PlaylistDownloadService {
   }
 
   async servePlaylistZip(downloadId: string): Promise<string> {
+    logger.info({ downloadId }, 'servePlaylistZip called');
+    
     const progress = await this.getPlaylistProgress(downloadId);
+    logger.info({ downloadId, progress }, 'Progress retrieved');
+    
     if (!progress || !progress.zipPath) {
+      logger.error({ downloadId, progress, hasZipPath: !!progress?.zipPath }, 'Playlist download not found or zipPath missing');
       throw new AppError('FILE_NOT_FOUND', 'Playlist download not found or not completed');
     }
 
+    logger.info({ downloadId, zipPath: progress.zipPath }, 'zipPath found, checking file existence');
+
     const fileExists = await fs.access(progress.zipPath).then(() => true).catch(() => false);
     if (!fileExists) {
+      logger.error({ downloadId, zipPath: progress.zipPath }, 'ZIP file does not exist on disk');
       throw new AppError('FILE_NOT_FOUND', 'ZIP file no longer exists');
     }
 
+    logger.info({ downloadId, zipPath: progress.zipPath }, 'ZIP file exists, returning path');
     return progress.zipPath;
   }
 }

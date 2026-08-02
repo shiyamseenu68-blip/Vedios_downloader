@@ -95,20 +95,49 @@ export default function PlaylistDownload() {
   };
 
   const handleDownloadZip = async () => {
-    if (!downloadId) return;
+    console.log('=== DOWNLOAD ZIP CLICKED ===');
+    console.log('downloadId:', downloadId);
+    
+    if (!downloadId) {
+      console.log('ERROR: No downloadId');
+      return;
+    }
 
     try {
+      console.log('Calling playlistApi.getFile with downloadId:', downloadId);
       const response = await playlistApi.getFile(downloadId);
+      console.log('Response received:', response);
+      console.log('Response status:', response.status);
+      console.log('Response headers:', response.headers);
+      console.log('Response data type:', typeof response.data);
+      console.log('Response data size:', response.data?.size || 'unknown');
+      
       const url = window.URL.createObjectURL(new Blob([response.data]));
+      console.log('Blob URL created:', url);
+      
       const link = document.createElement('a');
       link.href = url;
       link.setAttribute('download', 'playlist.zip');
       document.body.appendChild(link);
+      console.log('Link element created and appended');
+      
       link.click();
+      console.log('Link clicked');
+      
       link.remove();
+      console.log('Link removed');
+      
       window.URL.revokeObjectURL(url);
+      console.log('Blob URL revoked');
+      
       toast.success('ZIP file downloaded');
+      console.log('=== DOWNLOAD ZIP SUCCESS ===');
     } catch (error) {
+      console.log('=== DOWNLOAD ZIP ERROR ===');
+      console.log('Error:', error);
+      console.log('Error response:', error.response);
+      console.log('Error message:', error.message);
+      console.log('========================');
       toast.error('Failed to download ZIP file');
     }
   };

@@ -89,9 +89,29 @@ export class DownloadService {
             const baseName = path.basename(outputPath, path.extname(outputPath));
             try {
               const files = await fs.readdir(downloadDir);
+              
+              // For audio, look for files that start with the base name
               const matchingFiles = files.filter((f: string) => f.startsWith(baseName));
+              
               if (matchingFiles.length > 0) {
-                const actualPath = path.join(downloadDir, matchingFiles[0]);
+                // For audio, prefer files ending with the expected extension, then .mp3, .m4a, .opus, .webm
+                let actualPath: string;
+                if (options.type === 'audio') {
+                  const expectedExt = path.extname(outputPath);
+                  const audioExtensions = [expectedExt, '.mp3', '.m4a', '.opus', '.webm'];
+                  let foundAudioFile: string | undefined;
+                  
+                  for (const ext of audioExtensions) {
+                    foundAudioFile = matchingFiles.find((f: string) => f.endsWith(ext));
+                    if (foundAudioFile) break;
+                  }
+                  
+                  actualPath = foundAudioFile 
+                    ? path.join(downloadDir, foundAudioFile)
+                    : path.join(downloadDir, matchingFiles[0]);
+                } else {
+                  actualPath = path.join(downloadDir, matchingFiles[0]);
+                }
                 progressTracker.completeDownload(downloadId, actualPath);
               } else {
                 progressTracker.completeDownload(downloadId, outputPath);
@@ -100,6 +120,7 @@ export class DownloadService {
               progressTracker.completeDownload(downloadId, outputPath);
             }
           } else {
+            logger.info({ downloadId, outputPath }, 'Expected file exists, using it');
             progressTracker.completeDownload(downloadId, outputPath);
           }
           resolve();

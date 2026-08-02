@@ -104,17 +104,38 @@ router.get('/playlist-file/:downloadId', async (req, res, next) => {
   try {
     const { downloadId } = req.params;
     
-    logger.info({ downloadId }, 'Playlist file download request received');
+    logger.info({ downloadId, timestamp: new Date().toISOString() }, '=== PLAYLIST FILE DOWNLOAD REQUEST START ===');
     
     const filePath = await playlistDownloadService.servePlaylistZip(downloadId);
     
-    logger.info({ downloadId, filePath }, 'File path retrieved, sending file');
+    logger.info({ downloadId, filePath }, 'File path retrieved, checking file existence');
+    
+    // Check if file exists and get its size
+    const fs = require('fs');
+    if (!fs.existsSync(filePath)) {
+      logger.error({ downloadId, filePath }, 'ZIP file does not exist on disk');
+      return res.status(404).json({
+        error: {
+          code: 'FILE_NOT_FOUND',
+          message: 'ZIP file not found',
+        },
+      });
+    }
+    
+    const stats = fs.statSync(filePath);
+    logger.info({ downloadId, filePath, fileSize: stats.size }, 'File exists, preparing to send');
+    
+    if (stats.size === 0) {
+      logger.warn({ downloadId, filePath }, 'ZIP file is empty (0 bytes)');
+    }
+    
+    logger.info({ downloadId, fileSize: stats.size }, 'Calling res.download()');
     
     res.download(filePath, `playlist_${downloadId}.zip`);
     
-    logger.info({ downloadId }, 'File download response sent');
+    logger.info({ downloadId, fileSize: stats.size }, '=== PLAYLIST FILE DOWNLOAD RESPONSE SENT ===');
   } catch (error) {
-    logger.error({ error }, 'Failed to serve playlist file');
+    logger.error({ error, stack: error.stack }, '=== PLAYLIST FILE DOWNLOAD ERROR ===');
     next(handleError(error, 'GET /api/playlist-file/:downloadId'));
   }
 });

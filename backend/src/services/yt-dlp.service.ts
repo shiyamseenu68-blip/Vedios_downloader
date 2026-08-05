@@ -118,6 +118,8 @@ export class YtDlpService {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
+    logger.info({ command, args: args.join(' ') }, 'executeWithAbort: About to spawn process');
+
     // Add ffmpeg-static to PATH for yt-dlp subprocess
     const ffmpegPath = require('ffmpeg-static');
     const ffmpegDir = path.dirname(ffmpegPath);
@@ -129,6 +131,7 @@ export class YtDlpService {
     };
 
     return new Promise((resolve, reject) => {
+      logger.info({ command, args: args.join(' ') }, 'executeWithAbort: Spawning process now');
       const process = spawn(command, args, { env });
       let stdout = '';
       let stderr = '';

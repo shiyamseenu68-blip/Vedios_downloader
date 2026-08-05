@@ -44,11 +44,12 @@ export class DownloadService {
     const ytDlpPath = this.getYtDlpPath();
     const args = this.buildYtDlpArgs(options, outputPath);
 
-    logger.info({ downloadId, command: `${ytDlpPath} ${args.join(' ')}` }, 'Starting download');
+    logger.info({ downloadId, ytDlpPath, command: `${ytDlpPath} ${args.join(' ')}` }, 'Starting download');
 
     progressTracker.updateProgress(downloadId, { status: 'downloading' });
 
     return new Promise((resolve, reject) => {
+      logger.info({ downloadId, ytDlpPath, args: args.join(' ') }, 'About to spawn yt-dlp process');
       const process = spawn(ytDlpPath, args);
       this.activeProcesses.set(downloadId, process);
 

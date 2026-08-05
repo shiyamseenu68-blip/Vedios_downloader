@@ -236,8 +236,25 @@ export class DownloadService {
 
   private getYtDlpPath(): string {
     const platform = process.platform;
-    const binary = platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
-    return path.join(process.cwd(), binary);
+    let binary = platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
+    
+    // Check if binary exists in project root (for production deployments)
+    const projectRootPath = path.join(process.cwd(), binary);
+    logger.info({ 
+      platform, 
+      binary, 
+      projectRootPath, 
+      exists: fsSync.existsSync(projectRootPath) 
+    }, 'DownloadService: Resolving yt-dlp path');
+    
+    if (fsSync.existsSync(projectRootPath)) {
+      logger.info({ resolvedPath: projectRootPath }, 'DownloadService: Using yt-dlp from project root');
+      return projectRootPath;
+    }
+    
+    // Fallback to default path
+    logger.warn({ fallbackPath: binary }, 'DownloadService: Using fallback yt-dlp path');
+    return binary;
   }
 }
 

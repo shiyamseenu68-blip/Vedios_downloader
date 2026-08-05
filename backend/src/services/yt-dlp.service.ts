@@ -14,11 +14,20 @@ export class YtDlpService {
     
     // Check if binary exists in project root (for production deployments)
     const projectRootPath = path.join(process.cwd(), binary);
+    logger.info({ 
+      platform, 
+      binary, 
+      projectRootPath, 
+      exists: require('fs').existsSync(projectRootPath) 
+    }, 'Resolving yt-dlp path');
+    
     if (require('fs').existsSync(projectRootPath)) {
+      logger.info({ resolvedPath: projectRootPath }, 'Using yt-dlp from project root');
       return projectRootPath;
     }
     
     // Fallback to default path
+    logger.warn({ fallbackPath: binary }, 'Using fallback yt-dlp path');
     return binary;
   }
 

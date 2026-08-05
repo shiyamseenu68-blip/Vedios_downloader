@@ -11,6 +11,7 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "moduleResolution": "Node16",
+    "types": ["node"],
     "allowSyntheticDefaultImports": true
   },
   "include": ["src/**/*"],

@@ -18,7 +18,7 @@ export interface DownloadOptions {
 export class DownloadService {
   private activeProcesses: Map<string, any> = new Map();
   private cookiePath: string | null = null;
-  private cookieStatus: { path: string | null; exists: boolean; loaded: boolean } = {
+  private cookieStatus: { path: string | null; exists: boolean; loaded: boolean; fileSize?: number; lineCount?: number } = {
     path: null,
     exists: false,
     loaded: false
@@ -41,13 +41,52 @@ export class DownloadService {
       this.cookieStatus.exists = exists;
       
       if (exists) {
-        this.cookiePath = cookieEnvPath;
-        this.cookieStatus.loaded = true;
-        logger.info({ 
-          cookiePath: cookieEnvPath, 
-          exists: true,
-          loaded: true 
-        }, 'DownloadService: YouTube cookies file found and will be used');
+        // Check if file is not empty
+        try {
+          const stats = fsSync.statSync(cookieEnvPath);
+          const fileSize = stats.size;
+          const content = fsSync.readFileSync(cookieEnvPath, 'utf8');
+          const lineCount = content.split('\n').length;
+          
+          logger.info({ 
+            cookiePath: cookieEnvPath, 
+            exists: true,
+            fileSize,
+            lineCount,
+            sampleContent: content.substring(0, 200)
+          }, 'DownloadService: YouTube cookies file found and content verified');
+          
+          if (fileSize === 0 || lineCount < 2) {
+            logger.warn({ 
+              cookiePath: cookieEnvPath, 
+              fileSize,
+              lineCount,
+              loaded: false 
+            }, 'DownloadService: YouTube cookies file exists but appears to be empty or invalid');
+            this.cookieStatus.loaded = false;
+            this.cookieStatus.fileSize = fileSize;
+            this.cookieStatus.lineCount = lineCount;
+          } else {
+            this.cookiePath = cookieEnvPath;
+            this.cookieStatus.loaded = true;
+            this.cookieStatus.fileSize = fileSize;
+            this.cookieStatus.lineCount = lineCount;
+            logger.info({ 
+              cookiePath: cookieEnvPath, 
+              exists: true,
+              fileSize,
+              lineCount,
+              loaded: true 
+            }, 'DownloadService: YouTube cookies file found and will be used');
+          }
+        } catch (error) {
+          logger.error({ 
+            cookiePath: cookieEnvPath, 
+            error: (error as Error).message,
+            loaded: false 
+          }, 'DownloadService: Error reading cookies file');
+          this.cookieStatus.loaded = false;
+        }
       } else {
         logger.warn({ 
           cookiePath: cookieEnvPath, 
@@ -88,12 +127,63 @@ export class DownloadService {
     outputPath: string
   ): Promise<void> {
     const ytDlpPath = this.getYtDlpPath();
-    const args = this.buildYtDlpArgs(options, outputPath);
+    
+    // Try with different strategies if first attempt fails
+    const strategies = [
+      () => this.buildYtDlpArgs(options, outputPath), // Primary strategy with cookies + impersonate
+      () => this.buildFallbackDownloadArgs(options, outputPath),  // Fallback without cookies
+      () => this.buildMinimalDownloadArgs(options, outputPath)   // Minimal strategy
+    ];
 
-    logger.info({ downloadId, ytDlpPath, command: `${ytDlpPath} ${args.join(' ')}` }, 'Starting download');
+    for (let i = 0; i < strategies.length; i++) {
+      const args = strategies[i]();
+      
+      logger.info({ 
+        downloadId,
+        strategy: i + 1,
+        totalStrategies: strategies.length,
+        command: `${ytDlpPath} ${args.join(' ')}` 
+      }, `Starting download with strategy ${i + 1}`);
 
-    progressTracker.updateProgress(downloadId, { status: 'downloading' });
+      progressTracker.updateProgress(downloadId, { status: 'downloading' });
 
+      try {
+        await this.executeWithRetry(downloadId, ytDlpPath, args, options, outputPath);
+        return; // Success, exit the strategy loop
+      } catch (error: any) {
+        const isLastAttempt = i === strategies.length - 1;
+        const errorStr = ((error as any).stderr || (error as any).stdout || error.message || '').toLowerCase();
+        
+        logger.error({
+          downloadId,
+          strategy: i + 1,
+          isLastAttempt,
+          command: `${ytDlpPath} ${args.join(' ')}`,
+          error: error.message,
+          isBotError: errorStr.includes('sign in to confirm') || errorStr.includes('bot')
+        }, `Download failed with strategy ${i + 1}`);
+
+        // If this is a bot detection error and we have more strategies, try next
+        if (!isLastAttempt && (errorStr.includes('sign in to confirm') || errorStr.includes('bot'))) {
+          logger.info({ downloadId, strategy: i + 1 }, 'Bot detection detected, trying next download strategy');
+          continue;
+        }
+
+        // If this is the last attempt or not a bot error, throw
+        throw error;
+      }
+    }
+
+    throw new AppError('DOWNLOAD_FAILED', 'All download strategies failed');
+  }
+
+  private async executeWithRetry(
+    downloadId: string,
+    ytDlpPath: string,
+    args: string[],
+    options: DownloadOptions,
+    outputPath: string
+  ): Promise<void> {
     return new Promise((resolve, reject) => {
       logger.info({ downloadId, ytDlpPath, args: args.join(' ') }, 'About to spawn yt-dlp process');
       
@@ -211,6 +301,7 @@ export class DownloadService {
       '-o',
       outputPath,
       '--no-playlist',
+      '--impersonate', 'chrome',
       '--extractor-args', 'youtube:player_client=android',
       '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     ];
@@ -245,8 +336,72 @@ export class DownloadService {
     logger.info({ 
       command: args.join(' '),
       argsCount: args.length,
-      hasCookies: !!cookiePath
+      hasCookies: !!cookiePath,
+      hasImpersonate: true,
+      extractorArgs: 'youtube:player_client=android'
     }, 'DownloadService: Complete yt-dlp command built');
+    
+    return args;
+  }
+
+  private buildFallbackDownloadArgs(options: DownloadOptions, outputPath: string): string[] {
+    const args = [
+      '-f',
+      this.getFormatString(options),
+      '-o',
+      outputPath,
+      '--no-playlist',
+      '--impersonate', 'chrome',
+      '--extractor-args', 'youtube:player_client=android',
+      '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    ];
+
+    if (options.type === 'audio') {
+      args.push('-x', '--audio-format', 'mp3');
+    }
+
+    // Add FFmpeg location for audio extraction
+    if (ffmpegPath) {
+      args.push('--ffmpeg-location', ffmpegPath);
+    }
+
+    args.push(options.url);
+    
+    logger.info({ 
+      strategy: 'fallback', 
+      hasCookies: false,
+      hasImpersonate: true 
+    }, 'Building fallback download arguments without cookies');
+    
+    return args;
+  }
+
+  private buildMinimalDownloadArgs(options: DownloadOptions, outputPath: string): string[] {
+    const args = [
+      '-f',
+      this.getFormatString(options),
+      '-o',
+      outputPath,
+      '--no-playlist',
+      '--extractor-args', 'youtube:player_client=android',
+    ];
+
+    if (options.type === 'audio') {
+      args.push('-x', '--audio-format', 'mp3');
+    }
+
+    // Add FFmpeg location for audio extraction
+    if (ffmpegPath) {
+      args.push('--ffmpeg-location', ffmpegPath);
+    }
+
+    args.push(options.url);
+    
+    logger.info({ 
+      strategy: 'minimal', 
+      hasCookies: false,
+      hasImpersonate: false 
+    }, 'Building minimal download arguments');
     
     return args;
   }
@@ -264,7 +419,7 @@ export class DownloadService {
     return null;
   }
 
-  public getCookieStatus(): { path: string | null; exists: boolean; loaded: boolean } {
+  public getCookieStatus(): { path: string | null; exists: boolean; loaded: boolean; fileSize?: number; lineCount?: number } {
     return this.cookieStatus;
   }
 

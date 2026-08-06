@@ -9,7 +9,7 @@ const execFileAsync = promisify(execFile);
 
 export class YtDlpService {
   private cookiePath: string | null = null;
-  private cookieStatus: { path: string | null; exists: boolean; loaded: boolean } = {
+  private cookieStatus: { path: string | null; exists: boolean; loaded: boolean; fileSize?: number; lineCount?: number } = {
     path: null,
     exists: false,
     loaded: false
@@ -33,13 +33,52 @@ export class YtDlpService {
       this.cookieStatus.exists = exists;
       
       if (exists) {
-        this.cookiePath = cookieEnvPath;
-        this.cookieStatus.loaded = true;
-        logger.info({ 
-          cookiePath: cookieEnvPath, 
-          exists: true,
-          loaded: true 
-        }, 'YouTube cookies file found and will be used');
+        // Check if file is not empty
+        try {
+          const stats = fs.statSync(cookieEnvPath);
+          const fileSize = stats.size;
+          const content = fs.readFileSync(cookieEnvPath, 'utf8');
+          const lineCount = content.split('\n').length;
+          
+          logger.info({ 
+            cookiePath: cookieEnvPath, 
+            exists: true,
+            fileSize,
+            lineCount,
+            sampleContent: content.substring(0, 200)
+          }, 'YouTube cookies file found and content verified');
+          
+          if (fileSize === 0 || lineCount < 2) {
+            logger.warn({ 
+              cookiePath: cookieEnvPath, 
+              fileSize,
+              lineCount,
+              loaded: false 
+            }, 'YouTube cookies file exists but appears to be empty or invalid');
+            this.cookieStatus.loaded = false;
+            this.cookieStatus.fileSize = fileSize;
+            this.cookieStatus.lineCount = lineCount;
+          } else {
+            this.cookiePath = cookieEnvPath;
+            this.cookieStatus.loaded = true;
+            this.cookieStatus.fileSize = fileSize;
+            this.cookieStatus.lineCount = lineCount;
+            logger.info({ 
+              cookiePath: cookieEnvPath, 
+              exists: true,
+              fileSize,
+              lineCount,
+              loaded: true 
+            }, 'YouTube cookies file found and will be used');
+          }
+        } catch (error) {
+          logger.error({ 
+            cookiePath: cookieEnvPath, 
+            error: (error as Error).message,
+            loaded: false 
+          }, 'Error reading cookies file');
+          this.cookieStatus.loaded = false;
+        }
       } else {
         logger.warn({ 
           cookiePath: cookieEnvPath, 
@@ -81,50 +120,118 @@ export class YtDlpService {
 
   async analyzeUrl(url: string): Promise<VideoMetadata | PlaylistMetadata> {
     const ytDlpPath = this.getYtDlpPath();
-    const args = this.buildAnalysisArgs(url);
+    
+    // Try with different strategies if first attempt fails
+    const strategies = [
+      () => this.buildAnalysisArgs(url), // Primary strategy with cookies + impersonate
+      () => this.buildFallbackArgs(url),  // Fallback without cookies
+      () => this.buildMinimalArgs(url)   // Minimal strategy
+    ];
 
-    logger.info({ command: `${ytDlpPath} ${args.join(' ')}` }, 'Analyzing URL');
+    for (let i = 0; i < strategies.length; i++) {
+      const args = strategies[i]();
+      logger.info({ 
+        strategy: i + 1,
+        totalStrategies: strategies.length,
+        command: `${ytDlpPath} ${args.join(' ')}` 
+      }, `Analyzing URL with strategy ${i + 1}`);
 
-    try {
-      const { stdout, stderr } = await execFileAsync(ytDlpPath, args);
-      
-      if (stderr) {
-        logger.warn({ stderr }, 'yt-dlp stderr output');
-      }
+      try {
+        const { stdout, stderr } = await execFileAsync(ytDlpPath, args);
+        
+        if (stderr) {
+          logger.warn({ stderr }, 'yt-dlp stderr output');
+        }
 
-      const data = JSON.parse(stdout);
-      
-      if (data._type === 'playlist') {
-        return this.parsePlaylistMetadata(data);
-      }
-      
-      return this.parseVideoMetadata(data);
-    } catch (error: any) {
-      logger.error({
-        command: `${ytDlpPath} ${args.join(' ')}`,
-        stdout: error.stdout,
-        stderr: error.stderr,
-        exitCode: error.code,
-        error: error.message,
-      }, 'yt-dlp analysis failed');
-
-      throw new AppError(
-        'ANALYSIS_FAILED',
-        'Failed to analyze URL',
-        {
+        const data = JSON.parse(stdout);
+        
+        if (data._type === 'playlist') {
+          return this.parsePlaylistMetadata(data);
+        }
+        
+        return this.parseVideoMetadata(data);
+      } catch (error: any) {
+        const isLastAttempt = i === strategies.length - 1;
+        const errorStr = (error.stderr || error.stdout || error.message || '').toLowerCase();
+        
+        logger.error({
+          strategy: i + 1,
+          isLastAttempt,
           command: `${ytDlpPath} ${args.join(' ')}`,
           stdout: error.stdout,
           stderr: error.stderr,
           exitCode: error.code,
+          error: error.message,
+          isBotError: errorStr.includes('sign in to confirm') || errorStr.includes('bot')
+        }, `yt-dlp analysis failed with strategy ${i + 1}`);
+
+        // If this is a bot detection error and we have more strategies, try next
+        if (!isLastAttempt && (errorStr.includes('sign in to confirm') || errorStr.includes('bot'))) {
+          logger.info({ strategy: i + 1 }, 'Bot detection detected, trying next strategy');
+          continue;
         }
-      );
+
+        // If this is the last attempt or not a bot error, throw
+        throw new AppError(
+          'ANALYSIS_FAILED',
+          'Failed to analyze URL',
+          {
+            command: `${ytDlpPath} ${args.join(' ')}`,
+            stdout: error.stdout,
+            stderr: error.stderr,
+            exitCode: error.code,
+            strategiesAttempted: i + 1,
+          }
+        );
+      }
     }
+
+    throw new AppError('ANALYSIS_FAILED', 'All analysis strategies failed');
+  }
+
+  private buildFallbackArgs(url: string): string[] {
+    const args = [
+      '--dump-json',
+      '--no-playlist',
+      '--impersonate', 'chrome',
+      '--extractor-args', 'youtube:player_client=android',
+      '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    ];
+
+    args.push(url);
+    
+    logger.info({ 
+      strategy: 'fallback', 
+      hasCookies: false,
+      hasImpersonate: true 
+    }, 'Building fallback arguments without cookies');
+    
+    return args;
+  }
+
+  private buildMinimalArgs(url: string): string[] {
+    const args = [
+      '--dump-json',
+      '--no-playlist',
+      '--extractor-args', 'youtube:player_client=android',
+    ];
+
+    args.push(url);
+    
+    logger.info({ 
+      strategy: 'minimal', 
+      hasCookies: false,
+      hasImpersonate: false 
+    }, 'Building minimal arguments');
+    
+    return args;
   }
 
   private buildAnalysisArgs(url: string): string[] {
     const args = [
       '--dump-json',
       '--no-playlist',
+      '--impersonate', 'chrome',
       '--extractor-args', 'youtube:player_client=android',
       '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     ];
@@ -150,7 +257,9 @@ export class YtDlpService {
     logger.info({ 
       command: args.join(' '),
       argsCount: args.length,
-      hasCookies: !!cookiePath
+      hasCookies: !!cookiePath,
+      hasImpersonate: true,
+      extractorArgs: 'youtube:player_client=android'
     }, 'Complete yt-dlp command built');
     
     return args;
@@ -169,7 +278,7 @@ export class YtDlpService {
     return null;
   }
 
-  public getCookieStatus(): { path: string | null; exists: boolean; loaded: boolean } {
+  public getCookieStatus(): { path: string | null; exists: boolean; loaded: boolean; fileSize?: number; lineCount?: number } {
     return this.cookieStatus;
   }
 
@@ -303,6 +412,7 @@ export class YtDlpService {
         '--dump-json',
         '--flat-playlist',
         '--playlist-end', '20',
+        '--impersonate', 'chrome',
         '--extractor-args', 'youtube:player_client=android',
         '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       ];
@@ -328,7 +438,9 @@ export class YtDlpService {
       logger.info({ 
         command: `${ytDlpPath} ${videoArgs.join(' ')}`,
         argsCount: videoArgs.length,
-        hasCookies: !!cookiePath
+        hasCookies: !!cookiePath,
+        hasImpersonate: true,
+        extractorArgs: 'youtube:player_client=android'
       }, 'Video extraction started with complete command');
 
       const videoStartTime = Date.now();

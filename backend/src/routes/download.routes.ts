@@ -21,7 +21,14 @@ router.post('/download', async (req, res, next) => {
       message: 'Download started',
     });
   } catch (error) {
-    next(handleError(error, 'POST /api/download'));
+    const handledError = handleError(error, 'POST /api/download');
+    res.status(500).json({
+      error: {
+        code: handledError.code,
+        message: handledError.message,
+        stderr: (handledError as any).stderr || null,
+      },
+    });
   }
 });
 

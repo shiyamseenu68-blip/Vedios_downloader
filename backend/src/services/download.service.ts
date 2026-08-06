@@ -50,14 +50,25 @@ export class DownloadService {
 
     return new Promise((resolve, reject) => {
       logger.info({ downloadId, ytDlpPath, args: args.join(' ') }, 'About to spawn yt-dlp process');
-      const process = spawn(ytDlpPath, args);
-      this.activeProcesses.set(downloadId, process);
+      
+      // Add ffmpeg, Node.js, and Python to PATH for yt-dlp subprocess
+      const ffmpegDir = ffmpegPath ? path.dirname(ffmpegPath) : '/usr/bin';
+      const nodeDir = process.execPath ? path.dirname(process.execPath) : '/usr/bin';
+      const pythonDir = '/usr/bin';
+      
+      const env = { 
+        ...process.env, 
+        PATH: `${ffmpegDir}${path.delimiter}${nodeDir}${path.delimiter}${pythonDir}${path.delimiter}${process.env.PATH}` 
+      };
+      
+      const childProcess = spawn(ytDlpPath, args, { env });
+      this.activeProcesses.set(downloadId, childProcess);
 
       let downloadedBytes = 0;
       let totalBytes = 0;
       let stderrOutput = '';
 
-      process.stderr.on('data', (data) => {
+      childProcess.stderr.on('data', (data) => {
         const output = data.toString();
         stderrOutput += output;
         logger.debug({ downloadId, output }, 'yt-dlp stderr');
@@ -75,7 +86,7 @@ export class DownloadService {
         });
       });
 
-      process.on('close', async (code) => {
+      childProcess.on('close', async (code) => {
         this.activeProcesses.delete(downloadId);
         
         if (code === 0) {
@@ -126,17 +137,20 @@ export class DownloadService {
           }
           resolve();
         } else {
-          const error = new AppError(
+          const error: any = new AppError(
             'DOWNLOAD_FAILED',
             `Download failed with exit code ${code}`,
             { exitCode: code, stderr: stderrOutput }
           );
           logger.error({ downloadId, exitCode: code, stderr: stderrOutput }, 'Download failed');
+          
+          // Include full stderr in error response for frontend debugging
+          error.stderr = stderrOutput;
           reject(error);
         }
       });
 
-      process.on('error', (error) => {
+      childProcess.on('error', (error) => {
         this.activeProcesses.delete(downloadId);
         logger.error({ downloadId, error: error.message }, 'Download process error');
         reject(new AppError('PROCESS_ERROR', error.message));
@@ -151,6 +165,8 @@ export class DownloadService {
       '-o',
       outputPath,
       '--no-playlist',
+      '--extractor-args', 'youtube:player_client=android',
+      '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     ];
 
     if (options.type === 'audio') {
@@ -162,9 +178,24 @@ export class DownloadService {
       args.push('--ffmpeg-location', ffmpegPath);
     }
 
+    // Add cookies if file exists
+    const cookiePath = this.getCookiePath();
+    if (cookiePath) {
+      args.push('--cookies', cookiePath);
+    }
+
     args.push(options.url);
 
     return args;
+  }
+
+  private getCookiePath(): string | null {
+    const cookiePath = process.env.YOUTUBE_COOKIES_FILE;
+    if (cookiePath && fsSync.existsSync(cookiePath)) {
+      logger.info({ cookiePath }, 'Using YouTube cookies file');
+      return cookiePath;
+    }
+    return null;
   }
 
   private getFormatString(options: DownloadOptions): string {
@@ -208,10 +239,10 @@ export class DownloadService {
   }
 
   cancelDownload(downloadId: string): void {
-    const process = this.activeProcesses.get(downloadId);
-    if (process) {
+    const childProcess = this.activeProcesses.get(downloadId);
+    if (childProcess) {
       logger.info({ downloadId }, 'Cancelling download');
-      process.kill();
+      childProcess.kill();
       this.activeProcesses.delete(downloadId);
       progressTracker.cancelDownload(downloadId);
     }

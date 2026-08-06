@@ -33,7 +33,7 @@ export class YtDlpService {
 
   async analyzeUrl(url: string): Promise<VideoMetadata | PlaylistMetadata> {
     const ytDlpPath = this.getYtDlpPath();
-    const args = ['--dump-json', '--no-playlist', url];
+    const args = this.buildAnalysisArgs(url);
 
     logger.info({ command: `${ytDlpPath} ${args.join(' ')}` }, 'Analyzing URL');
 
@@ -71,6 +71,33 @@ export class YtDlpService {
         }
       );
     }
+  }
+
+  private buildAnalysisArgs(url: string): string[] {
+    const args = [
+      '--dump-json',
+      '--no-playlist',
+      '--extractor-args', 'youtube:player_client=android',
+      '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    ];
+
+    // Add cookies if file exists
+    const cookiePath = this.getCookiePath();
+    if (cookiePath) {
+      args.push('--cookies', cookiePath);
+    }
+
+    args.push(url);
+    return args;
+  }
+
+  private getCookiePath(): string | null {
+    const cookiePath = process.env.YOUTUBE_COOKIES_FILE;
+    if (cookiePath && require('fs').existsSync(cookiePath)) {
+      logger.info({ cookiePath }, 'Using YouTube cookies file');
+      return cookiePath;
+    }
+    return null;
   }
 
   private parseVideoMetadata(data: any): VideoMetadata {
@@ -122,12 +149,15 @@ export class YtDlpService {
 
     // Add ffmpeg-static to PATH for yt-dlp subprocess
     const ffmpegPath = require('ffmpeg-static');
-    const ffmpegDir = path.dirname(ffmpegPath);
-    // Add Node.js to PATH for JavaScript runtime
-    const nodeDir = 'C:\\Program Files\\nodejs';
+    const ffmpegDir = ffmpegPath ? path.dirname(ffmpegPath) : '/usr/bin';
+    
+    // Add Node.js and Python to PATH for JavaScript runtime
+    const nodeDir = process.execPath ? path.dirname(process.execPath) : '/usr/bin';
+    const pythonDir = '/usr/bin';
+    
     const env = { 
       ...process.env, 
-      PATH: `${ffmpegDir}${path.delimiter}${nodeDir}${path.delimiter}${process.env.PATH}` 
+      PATH: `${ffmpegDir}${path.delimiter}${nodeDir}${path.delimiter}${pythonDir}${path.delimiter}${process.env.PATH}` 
     };
 
     return new Promise((resolve, reject) => {
@@ -200,8 +230,17 @@ export class YtDlpService {
         '--dump-json',
         '--flat-playlist',
         '--playlist-end', '20',
-        url
+        '--extractor-args', 'youtube:player_client=android',
+        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       ];
+
+      // Add cookies if file exists
+      const cookiePath = this.getCookiePath();
+      if (cookiePath) {
+        videoArgs.push('--cookies', cookiePath);
+      }
+
+      videoArgs.push(url);
       logger.info({ command: `${ytDlpPath} ${videoArgs.join(' ')}` }, 'Video extraction started');
 
       const videoStartTime = Date.now();

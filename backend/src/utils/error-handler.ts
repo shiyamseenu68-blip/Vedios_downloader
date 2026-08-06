@@ -1,6 +1,8 @@
 import { logger } from '../config/logger';
 
 export class AppError extends Error {
+  public stderr?: string;
+  
   constructor(
     public code: string,
     message: string,

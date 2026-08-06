@@ -22,7 +22,14 @@ router.post('/analyze-playlist', async (req, res, next) => {
       data: result,
     });
   } catch (error) {
-    next(handleError(error, 'POST /api/analyze-playlist'));
+    const handledError = handleError(error, 'POST /api/analyze-playlist');
+    res.status(500).json({
+      error: {
+        code: handledError.code,
+        message: handledError.message,
+        stderr: (handledError as any).stderr || null,
+      },
+    });
   }
 });
 
@@ -47,7 +54,14 @@ router.post('/download-playlist', async (req, res, next) => {
       message: 'Playlist download started',
     });
   } catch (error) {
-    next(handleError(error, 'POST /api/download-playlist'));
+    const handledError = handleError(error, 'POST /api/download-playlist');
+    res.status(500).json({
+      error: {
+        code: handledError.code,
+        message: handledError.message,
+        stderr: (handledError as any).stderr || null,
+      },
+    });
   }
 });
 

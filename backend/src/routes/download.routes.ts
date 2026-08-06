@@ -7,6 +7,21 @@ import { logger } from '../config/logger';
 
 const router = Router();
 
+// Health check endpoint with cookie status
+router.get('/health', async (req, res, next) => {
+  try {
+    const cookieStatus = downloadService.getCookieStatus();
+    res.json({
+      success: true,
+      status: 'healthy',
+      cookieStatus,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(handleError(error, 'GET /api/health'));
+  }
+});
+
 router.post('/download', async (req, res, next) => {
   try {
     const { url, quality, type } = downloadRequestSchema.parse(req.body);
@@ -15,10 +30,13 @@ router.post('/download', async (req, res, next) => {
 
     const downloadId = await downloadService.startDownload({ url, quality, type });
     
+    const cookieStatus = downloadService.getCookieStatus();
+    
     res.json({
       success: true,
       downloadId,
       message: 'Download started',
+      cookieStatus,
     });
   } catch (error) {
     const handledError = handleError(error, 'POST /api/download');
@@ -27,6 +45,7 @@ router.post('/download', async (req, res, next) => {
         code: handledError.code,
         message: handledError.message,
         stderr: (handledError as any).stderr || null,
+        cookieStatus: downloadService.getCookieStatus(),
       },
     });
   }

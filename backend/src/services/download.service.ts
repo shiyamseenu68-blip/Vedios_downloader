@@ -17,6 +17,52 @@ export interface DownloadOptions {
 
 export class DownloadService {
   private activeProcesses: Map<string, any> = new Map();
+  private cookiePath: string | null = null;
+  private cookieStatus: { path: string | null; exists: boolean; loaded: boolean } = {
+    path: null,
+    exists: false,
+    loaded: false
+  };
+
+  constructor() {
+    this.initializeCookieSupport();
+  }
+
+  private initializeCookieSupport(): void {
+    const cookieEnvPath = process.env.YOUTUBE_COOKIES_FILE;
+    logger.info({ 
+      envVar: 'YOUTUBE_COOKIES_FILE', 
+      value: cookieEnvPath || 'NOT_SET' 
+    }, 'DownloadService: Checking cookie environment variable');
+
+    if (cookieEnvPath) {
+      this.cookieStatus.path = cookieEnvPath;
+      const exists = fsSync.existsSync(cookieEnvPath);
+      this.cookieStatus.exists = exists;
+      
+      if (exists) {
+        this.cookiePath = cookieEnvPath;
+        this.cookieStatus.loaded = true;
+        logger.info({ 
+          cookiePath: cookieEnvPath, 
+          exists: true,
+          loaded: true 
+        }, 'DownloadService: YouTube cookies file found and will be used');
+      } else {
+        logger.warn({ 
+          cookiePath: cookieEnvPath, 
+          exists: false,
+          loaded: false 
+        }, 'DownloadService: YouTube cookies file path specified but file does not exist');
+      }
+    } else {
+      logger.info({ 
+        envVar: 'YOUTUBE_COOKIES_FILE', 
+        value: 'NOT_SET',
+        fallback: 'Using browser impersonation mode' 
+      }, 'DownloadService: No cookies file configured, will use browser impersonation');
+    }
+  }
 
   async startDownload(options: DownloadOptions): Promise<string> {
     const downloadId = generateDownloadId();
@@ -182,20 +228,44 @@ export class DownloadService {
     const cookiePath = this.getCookiePath();
     if (cookiePath) {
       args.push('--cookies', cookiePath);
+      logger.info({ 
+        usingCookies: true, 
+        cookiePath 
+      }, 'DownloadService: Adding --cookies argument to yt-dlp command');
+    } else {
+      logger.info({ 
+        usingCookies: false, 
+        fallback: 'browser impersonation' 
+      }, 'DownloadService: No cookies available, using browser impersonation mode');
     }
 
     args.push(options.url);
-
+    
+    // Log the complete command for debugging
+    logger.info({ 
+      command: args.join(' '),
+      argsCount: args.length,
+      hasCookies: !!cookiePath
+    }, 'DownloadService: Complete yt-dlp command built');
+    
     return args;
   }
 
   private getCookiePath(): string | null {
-    const cookiePath = process.env.YOUTUBE_COOKIES_FILE;
-    if (cookiePath && fsSync.existsSync(cookiePath)) {
-      logger.info({ cookiePath }, 'Using YouTube cookies file');
-      return cookiePath;
+    // Log cookie status for debugging
+    logger.info({ 
+      cookieStatus: this.cookieStatus,
+      willUseCookies: this.cookieStatus.loaded 
+    }, 'DownloadService: Cookie path check');
+    
+    if (this.cookieStatus.loaded && this.cookiePath) {
+      return this.cookiePath;
     }
     return null;
+  }
+
+  public getCookieStatus(): { path: string | null; exists: boolean; loaded: boolean } {
+    return this.cookieStatus;
   }
 
   private getFormatString(options: DownloadOptions): string {

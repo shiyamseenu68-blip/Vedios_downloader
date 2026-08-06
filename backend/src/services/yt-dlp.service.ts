@@ -8,6 +8,54 @@ import { VideoMetadata, PlaylistMetadata } from '../types';
 const execFileAsync = promisify(execFile);
 
 export class YtDlpService {
+  private cookiePath: string | null = null;
+  private cookieStatus: { path: string | null; exists: boolean; loaded: boolean } = {
+    path: null,
+    exists: false,
+    loaded: false
+  };
+
+  constructor() {
+    this.initializeCookieSupport();
+  }
+
+  private initializeCookieSupport(): void {
+    const cookieEnvPath = process.env.YOUTUBE_COOKIES_FILE;
+    logger.info({ 
+      envVar: 'YOUTUBE_COOKIES_FILE', 
+      value: cookieEnvPath || 'NOT_SET' 
+    }, 'Checking cookie environment variable');
+
+    if (cookieEnvPath) {
+      this.cookieStatus.path = cookieEnvPath;
+      const fs = require('fs');
+      const exists = fs.existsSync(cookieEnvPath);
+      this.cookieStatus.exists = exists;
+      
+      if (exists) {
+        this.cookiePath = cookieEnvPath;
+        this.cookieStatus.loaded = true;
+        logger.info({ 
+          cookiePath: cookieEnvPath, 
+          exists: true,
+          loaded: true 
+        }, 'YouTube cookies file found and will be used');
+      } else {
+        logger.warn({ 
+          cookiePath: cookieEnvPath, 
+          exists: false,
+          loaded: false 
+        }, 'YouTube cookies file path specified but file does not exist');
+      }
+    } else {
+      logger.info({ 
+        envVar: 'YOUTUBE_COOKIES_FILE', 
+        value: 'NOT_SET',
+        fallback: 'Using browser impersonation mode' 
+      }, 'No cookies file configured, will use browser impersonation');
+    }
+  }
+
   private getYtDlpPath(): string {
     const platform = process.platform;
     let binary = platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
@@ -85,19 +133,44 @@ export class YtDlpService {
     const cookiePath = this.getCookiePath();
     if (cookiePath) {
       args.push('--cookies', cookiePath);
+      logger.info({ 
+        usingCookies: true, 
+        cookiePath 
+      }, 'Adding --cookies argument to yt-dlp command');
+    } else {
+      logger.info({ 
+        usingCookies: false, 
+        fallback: 'browser impersonation' 
+      }, 'No cookies available, using browser impersonation mode');
     }
 
     args.push(url);
+    
+    // Log the complete command for debugging
+    logger.info({ 
+      command: args.join(' '),
+      argsCount: args.length,
+      hasCookies: !!cookiePath
+    }, 'Complete yt-dlp command built');
+    
     return args;
   }
 
   private getCookiePath(): string | null {
-    const cookiePath = process.env.YOUTUBE_COOKIES_FILE;
-    if (cookiePath && require('fs').existsSync(cookiePath)) {
-      logger.info({ cookiePath }, 'Using YouTube cookies file');
-      return cookiePath;
+    // Log cookie status for debugging
+    logger.info({ 
+      cookieStatus: this.cookieStatus,
+      willUseCookies: this.cookieStatus.loaded 
+    }, 'Cookie path check');
+    
+    if (this.cookieStatus.loaded && this.cookiePath) {
+      return this.cookiePath;
     }
     return null;
+  }
+
+  public getCookieStatus(): { path: string | null; exists: boolean; loaded: boolean } {
+    return this.cookieStatus;
   }
 
   private parseVideoMetadata(data: any): VideoMetadata {
@@ -238,10 +311,25 @@ export class YtDlpService {
       const cookiePath = this.getCookiePath();
       if (cookiePath) {
         videoArgs.push('--cookies', cookiePath);
+        logger.info({ 
+          usingCookies: true, 
+          cookiePath 
+        }, 'Adding --cookies argument to playlist yt-dlp command');
+      } else {
+        logger.info({ 
+          usingCookies: false, 
+          fallback: 'browser impersonation' 
+        }, 'No cookies available for playlist, using browser impersonation mode');
       }
 
       videoArgs.push(url);
-      logger.info({ command: `${ytDlpPath} ${videoArgs.join(' ')}` }, 'Video extraction started');
+      
+      // Log the complete command for debugging
+      logger.info({ 
+        command: `${ytDlpPath} ${videoArgs.join(' ')}`,
+        argsCount: videoArgs.length,
+        hasCookies: !!cookiePath
+      }, 'Video extraction started with complete command');
 
       const videoStartTime = Date.now();
       const { stdout: videoStdout } = await this.executeWithAbort(ytDlpPath, videoArgs, 60000);

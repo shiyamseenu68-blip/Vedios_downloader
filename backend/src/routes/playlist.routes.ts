@@ -16,10 +16,12 @@ router.post('/analyze-playlist', async (req, res, next) => {
     logger.info({ url }, 'Playlist analysis request received');
 
     const result = await ytDlpService.analyzePlaylist(url);
+    const cookieStatus = ytDlpService.getCookieStatus();
     
     res.json({
       success: true,
       data: result,
+      cookieStatus,
     });
   } catch (error) {
     const handledError = handleError(error, 'POST /api/analyze-playlist');
@@ -28,6 +30,7 @@ router.post('/analyze-playlist', async (req, res, next) => {
         code: handledError.code,
         message: handledError.message,
         stderr: (handledError as any).stderr || null,
+        cookieStatus: ytDlpService.getCookieStatus(),
       },
     });
   }
@@ -47,11 +50,12 @@ router.post('/download-playlist', async (req, res, next) => {
       logger.error({ downloadId, error }, 'Background download failed');
     });
     
-    // Return immediately with downloadId
+    // Return immediately with downloadId and cookie status
     res.json({
       success: true,
       downloadId,
       message: 'Playlist download started',
+      cookieStatus: ytDlpService.getCookieStatus(),
     });
   } catch (error) {
     const handledError = handleError(error, 'POST /api/download-playlist');
@@ -60,6 +64,7 @@ router.post('/download-playlist', async (req, res, next) => {
         code: handledError.code,
         message: handledError.message,
         stderr: (handledError as any).stderr || null,
+        cookieStatus: ytDlpService.getCookieStatus(),
       },
     });
   }
